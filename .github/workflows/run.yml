@@ -4,7 +4,7 @@ on:
   schedule:
     # S'executa cada 8 hores (3 cops al dia: 06:00, 14:00, 22:00 UTC)
     - cron: '0 6,14,22 * * *'
-  workflow_dispatch: # Permet clicar el botó "Run workflow" manualment per fer proves
+  workflow_dispatch: # Permet executar-lo manualment amb el botó "Run workflow"
 
 jobs:
   run-bot:
@@ -45,5 +45,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add history.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update history.json [skip ci]" && git push origin main)
+          if [ -f history.json ]; then
+            git add history.json
+            git diff --quiet && git diff --staged --quiet || (git commit -m "Update history.json [skip ci]" && git push origin main)
+          fi
