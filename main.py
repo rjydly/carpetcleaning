@@ -21,6 +21,16 @@ TMP_DIR = "temp_media"
 
 os.makedirs(TMP_DIR, exist_ok=True)
 
+# Assegurem que history.json existeixi sempre
+if not os.path.exists(HISTORY_FILE):
+    with open(HISTORY_FILE, "w") as f:
+        json.dump([], f)
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*"
+}
+
 # ==========================================
 # UTILITATS TELEGRAM
 # ==========================================
@@ -45,7 +55,7 @@ def send_telegram_video(video_path, caption=""):
             files = {"video": f}
             data = {"chat_id": TELEGRAM_CHAT_ID, "caption": caption}
             print(f"📤 Enviant {video_path} a Telegram...")
-            res = requests.post(url, data=data, files=files, timeout=120)
+            res = requests.post(url, data=data, files=files, timeout=180)
             if res.status_code == 200:
                 print("✅ Vídeo enviat a Telegram correctament!")
             else:
@@ -85,17 +95,23 @@ def get_best_video():
 
     for acc in accounts:
         print(f"🔍 Comprovant TikTok: @{acc}...")
-        url = f"https://tikwm.com/api/user/posts?unique_id={acc}&count=15"
+        url = f"https://www.tikwm.com/api/user/posts?unique_id={acc}&count=15"
         try:
-            res = requests.get(url, timeout=15).json()
-            if res.get("code") != 0 or "data" not in res or "videos" not in res["data"]:
+            res = requests.get(url, headers=HEADERS, timeout=20)
+            if res.status_code != 200:
+                print(f"⚠️ TikWM ha respost amb codi HTTP {res.status_code}")
                 continue
 
-            for v in res["data"]["videos"]:
+            data = res.json()
+            if data.get("code") != 0 or "data" not in data or "videos" not in data["data"]:
+                print(f"⚠️ Resposta buida o usuari no trobat per @{acc}")
+                continue
+
+            for v in data["data"]["videos"]:
                 vid_id = str(v.get("id"))
                 duration = v.get("duration", 0)
 
-                # Regla: vídeos de més de 10 minuts es descarten
+                # Regla: descartar si > 10 minuts (600s) o ja processat
                 if vid_id in history or duration > 600 or duration == 0:
                     continue
 
@@ -105,7 +121,7 @@ def get_best_video():
                     "title": v.get("title", "Satisfying Carpet Cleaning"),
                     "views": v.get("play_count", 0),
                     "duration": duration,
-                    "download_url": v.get("play")  # Sense marca d'aigua
+                    "download_url": v.get("play")  # Enllaç directe net sense marca
                 })
         except Exception as e:
             print(f"Error consultant @{acc}: {e}")
@@ -114,7 +130,7 @@ def get_best_video():
         print("ℹ️ No hi ha vídeos nous o aptes per descarregar.")
         return None
 
-    # Ordenar pel més viral (més views)
+    # Ordenar pel més viral (més visualitzacions)
     candidates.sort(key=lambda x: x["views"], reverse=True)
     return candidates[0]
 
@@ -122,15 +138,12 @@ def get_best_video():
 # PROCESSAMENT FFMPEG
 # ==========================================
 def process_video(raw_path, duration):
-    """
-    Retorna una llista de tuples: [(path_video_processat, titol_part)]
-    """
     output_files = []
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
-    # CAS A: Vídeo entre 1m 29s (89s) i 2 minuts (120s) -> accelerar per encabir-lo en 88s
+    # CAS A: Entre 1m 29s (89s) i 2 minuts (120s) -> accelerar per durar exactament 88s
     if 89 < duration <= 120:
-        print(f"⚡ Accelerant vídeo de {duration}s a 88s...")
+        print(f"⚡ Accelerant vídeo de {duration}s a 88s per complir límit de Reels...")
         out_path = os.path.join(TMP_DIR, "output_speed.mp4")
         speed_factor = duration / 88.0
         pts_factor = 1.0 / speed_factor
@@ -146,7 +159,7 @@ def process_video(raw_path, duration):
         subprocess.run(cmd, check=True)
         output_files.append((out_path, ""))
 
-    # CAS B: Vídeo de més de 2 minuts (i <= 10 minuts) -> tallar en parts d'1m 20s (80s)
+    # CAS B: Més de 2 minuts (i <= 10 minuts) -> tallar en parts d'1m 20s (80s)
     elif duration > 120:
         chunk_len = 80
         total_parts = int((duration // chunk_len) + (1 if duration % chunk_len > 0 else 0))
@@ -158,7 +171,6 @@ def process_video(raw_path, duration):
             part_text = f"Part {part_num}"
             out_path = os.path.join(TMP_DIR, f"output_part_{part_num}.mp4")
 
-            # Filtre: Retalla 80s + escala a 960x1700 + fons 1080x1920 blanc + text superior
             vf = (
                 f"scale=960:1700:force_original_aspect_ratio=decrease,"
                 f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=white,"
@@ -196,24 +208,18 @@ def process_video(raw_path, duration):
 # HOSTING TEMPORAL EN ORPHAN BRANCH (MEDIA)
 # ==========================================
 def upload_to_media_branch(local_file, remote_filename):
-    """
-    Fa un push forçat d'un sol fitxer a la branca 'media' per no inflar l'historial.
-    """
     print(f"📦 Pujant {remote_filename} a la branca orphan 'media'...")
     subprocess.run(["git", "config", "user.name", "CarpetBot"], check=True)
     subprocess.run(["git", "config", "user.email", "bot@github.com"], check=True)
     subprocess.run(["git", "checkout", "--orphan", "media"], check=True)
     subprocess.run(["git", "rm", "-rf", "."], check=False)
     
-    # Copiar fitxer
     dest = os.path.join(".", remote_filename)
     subprocess.run(["cp", local_file, dest], check=True)
     
     subprocess.run(["git", "add", remote_filename], check=True)
     subprocess.run(["git", "commit", "-m", f"Host video {remote_filename}"], check=True)
     subprocess.run(["git", "push", "-f", "origin", "media"], check=True)
-    
-    # Tornar a main
     subprocess.run(["git", "checkout", "main"], check=True)
 
     public_url = f"https://raw.githubusercontent.com/{GITHUB_REPOSITORY}/media/{remote_filename}"
@@ -263,12 +269,12 @@ def main():
     # 1. Descarregar vídeo original
     raw_path = os.path.join(TMP_DIR, "raw_video.mp4")
     print(f"⬇️ Descarregant de TikWM...")
-    r = requests.get(target["download_url"], stream=True, timeout=60)
+    r = requests.get(target["download_url"], headers=HEADERS, stream=True, timeout=60)
     with open(raw_path, "wb") as f:
         for chunk in r.iter_content(chunk_size=1024 * 1024):
             f.write(chunk)
 
-    # 2. Processar amb FFmpeg segons les regles de durada
+    # 2. Processar amb FFmpeg
     processed_list = process_video(raw_path, target["duration"])
 
     # 3. Publicar o Mode Prova
@@ -287,7 +293,7 @@ def main():
             else:
                 send_telegram_msg(f"❌ Error en publicar a Zernio: {post_title}")
 
-    # 4. Afegir a l'historial per no repetir mai
+    # 4. Afegir a l'historial per no repetir
     history = load_history()
     history.append(target["id"])
     save_history(history)
